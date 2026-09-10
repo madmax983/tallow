@@ -3,11 +3,11 @@
 Living document. Checked boxes are verified in QEMU (`qemu-system-xtensa
 -machine esp32s3`) unless noted.
 
-## v0.1 — spark (in progress)
-- [ ] `esp` Rust toolchain builds `xtensa-esp32s3-none-elf` in this environment
-- [ ] Espressif QEMU fork boots an image on the `esp32s3` machine
-- [ ] Minimal kernel: entry point, UART0 banner, panic handler
-- [ ] Serial log captured from QEMU proves the boot
+## v0.1 — spark (done, verified in QEMU)
+- [x] `esp` Rust toolchain builds `xtensa-esp32s3-none-elf` in this environment
+- [x] Espressif QEMU fork boots an image on the `esp32s3` machine
+- [x] Minimal kernel: entry point, UART0 banner, panic handler
+- [x] Serial log captured from QEMU proves the boot
 
 ## v0.2 — tick
 - [ ] Timer group interrupt wired, periodic tick at 1 kHz

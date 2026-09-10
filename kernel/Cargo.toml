@@ -1,0 +1,14 @@
+[package]
+name = "tallow"
+version = "0.1.0"
+edition = "2021"
+description = "Tallow — a tiny best-in-breed OS kernel for the ESP32-S3"
+
+[profile.dev]
+opt-level = "s"
+debug = true
+
+[profile.release]
+opt-level = "s"
+debug = true
+lto = false

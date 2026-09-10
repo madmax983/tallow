@@ -11,8 +11,9 @@ build-time proofs where they matter most.
 
 ## Status
 
-**v0.1 bring-up in progress** — toolchain + QEMU environment being built,
-first serial banner next.
+**v0.1 "spark" is booted and verified** — the kernel builds with the Espressif
+Rust toolchain, boots in QEMU's `esp32s3` machine, and prints its banner on
+UART0. See [`docs/BUILDING.md`](docs/BUILDING.md) for the full recipe.
 
 ## Design
 

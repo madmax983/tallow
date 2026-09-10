@@ -1,4 +1,7 @@
 target/
+kernel/target/
+kernel/build/
+kernel/.cargo-home/
 **/*.rs.bk
 *.orig
 .env
