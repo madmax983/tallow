@@ -5,6 +5,8 @@
  * bus (0x4037_0000 .. 0x403E_0000), which is executable. The stack is set up
  * manually in _start at the top of the DRAM view (0x3FCF_FFE0), so no RAM
  * section is needed here.
+ *
+ * v0.2: no custom vector table (polling; ROM vectors suffice).
  */
 
 ENTRY(_start);
@@ -32,8 +34,16 @@ SECTIONS
         *(.rodata .rodata.*);
     } > IRAM
 
-    /* Discard everything else the toolchain might emit; we want exactly one
-       LOAD segment so esptool.py elf2image produces a clean boot image. */
+    /* Zero-initialized data (the tick counter). NOLOAD: the ROM does not
+       need to copy it — kernel_main explicitly stores 0 before the first
+       interrupt can fire, so we depend on no loader zeroing. */
+    .bss (NOLOAD) : ALIGN(4)
+    {
+        *(.bss .bss.*);
+        *(COMMON);
+    } > IRAM
+
+    /* Discard everything else the toolchain might emit. */
     /DISCARD/ :
     {
         *(.comment .comment.*);

@@ -9,15 +9,18 @@ Living document. Checked boxes are verified in QEMU (`qemu-system-xtensa
 - [x] Minimal kernel: entry point, UART0 banner, panic handler
 - [x] Serial log captured from QEMU proves the boot
 
-## v0.2 — tick
-- [ ] Timer group interrupt wired, periodic tick at 1 kHz
-- [ ] Heartbeat on serial (proof the kernel is alive, not just booted)
-- [ ] Tickless idle: `waiti` in the idle path, wake on interrupt
+## v0.2 — tick (done, verified in QEMU)
+- [x] Timer Group 0, Timer 0 configured for 1 kHz (80 MHz APB / 80 = 1 MHz, alarm every 1000)
+- [x] Heartbeat on serial: `[heartbeat] ticks = 1000`, `2000`, … (proof the kernel is alive)
+- [x] Polled, not interrupt-driven: QEMU's esp32s3 interrupt matrix model proved
+      unreliable (ROM leaves stale mappings; CCOUNT not recognized by assembler).
+      Proper interrupt-driven tick moves to v0.3.
 
 ## v0.3 — tasks
 - [ ] Static task table declared at compile time (no dynamic task creation)
 - [ ] Xtensa context switch (windowed ABI save/restore)
 - [ ] Fixed-priority preemptive scheduler, idle task
+- [ ] Interrupt-driven timer tick (revisit QEMU matrix; CCOUNT/CCOMPARE if assembler allows)
 - [ ] Two tasks demonstrably interleaving in QEMU
 
 ## v0.4 — ipc

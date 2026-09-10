@@ -11,9 +11,13 @@ build-time proofs where they matter most.
 
 ## Status
 
-**v0.1 "spark" is booted and verified** — the kernel builds with the Espressif
-Rust toolchain, boots in QEMU's `esp32s3` machine, and prints its banner on
-UART0. See [`docs/BUILDING.md`](docs/BUILDING.md) for the full recipe.
+**v0.2 "tick" is booted and verified** — the kernel builds with the Espressif
+Rust toolchain, boots in QEMU's `esp32s3` machine, and prints a 1 kHz
+heartbeat (`[heartbeat] ticks = 1000`, `2000`, …) on UART0. The tick is
+polled, not interrupt-driven (see below). See [`docs/BUILDING.md`](docs/BUILDING.md)
+for the full recipe.
+
+**v0.1 "spark"** — kernel boots in QEMU, UART banner, panic handler (verified).
 
 ## Design
 
@@ -41,8 +45,8 @@ Theseus, …) anchored to the ESP32-S3. The conclusions that shape this kernel:
 | Milestone | Goal |
 |-----------|------|
 | v0.1 spark | Boot in QEMU, UART banner, panic handler |
-| v0.2 tick | Timer interrupt, heartbeat, preemptive tick |
-| v0.3 tasks | Static task table, context switch, idle task |
+| v0.2 tick | 1 kHz timer tick (polled), heartbeat on UART |
+| v0.3 tasks | Static task table, context switch, idle task, interrupt-driven tick |
 | v0.4 ipc | Synchronous IPC + notifications |
 | v0.5 mpu | Per-task MPU compartments |
 | v0.6 drivers | GPIO/LED, UART driver as capsule |
