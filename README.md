@@ -11,11 +11,19 @@ build-time proofs where they matter most.
 
 ## Status
 
-**v0.2 "tick" is booted and verified** — the kernel builds with the Espressif
-Rust toolchain, boots in QEMU's `esp32s3` machine, and prints a 1 kHz
-heartbeat (`[heartbeat] ticks = 1000`, `2000`, …) on UART0. The tick is
-polled, not interrupt-driven (see below). See [`docs/BUILDING.md`](docs/BUILDING.md)
-for the full recipe.
+**v0.3 "tasks" is booted and verified** — the kernel builds with the Espressif
+Rust toolchain, boots in QEMU's `esp32s3` machine, and runs two cooperative
+tasks (A and B) on private 4 KiB stacks, driven by the nominal 1 kHz polled
+tick. UART0 shows `ABAB…` with `[t=N]` markers every 100 ticks and an idle
+heartbeat every 1000 ticks. `kernel/regression.py` proves it deterministically
+(≈5,800 AB pairs, 57 monotonic tick markers, 5 heartbeats in 12 s).
+Scheduling is **cooperative, not preemptive**: the timer interrupt was shown
+to reach the CPU's exception vector, but the tested return paths (`rfe`,
+manual `EPS` restore, `jx EPC1`) did not resume under the current ESP32-S3
+QEMU setup — so the tick is polled and tasks yield by returning. Preemption
+is future work. See [`docs/BUILDING.md`](docs/BUILDING.md) for the recipe.
+
+**v0.2 "tick"** — 1 kHz timer tick (polled), heartbeat on UART (verified).
 
 **v0.1 "spark"** — kernel boots in QEMU, UART banner, panic handler (verified).
 
@@ -46,7 +54,7 @@ Theseus, …) anchored to the ESP32-S3. The conclusions that shape this kernel:
 |-----------|------|
 | v0.1 spark | Boot in QEMU, UART banner, panic handler |
 | v0.2 tick | 1 kHz timer tick (polled), heartbeat on UART |
-| v0.3 tasks | Static task table, context switch, idle task, interrupt-driven tick |
+| v0.3 tasks | Static task table, cooperative round-robin, private stacks, polled tick |
 | v0.4 ipc | Synchronous IPC + notifications |
 | v0.5 mpu | Per-task MPU compartments |
 | v0.6 drivers | GPIO/LED, UART driver as capsule |

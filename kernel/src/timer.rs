@@ -1,29 +1,23 @@
-//! v0.2 "tick": the 1 kHz timer, polled.
+//! v0.3 "tasks": the 1 kHz timer, polled.
 //!
 //! Clock tree: TIMG0 runs off the 80 MHz APB clock. Timer 0 is configured
 //! with a divider of 80 (1 MHz timer clock), counts upward from 0 with
 //! autoreload, and raises an alarm every 1000 ticks — 1 kHz nominal.
 //!
-//! v0.2 polls the timer's interrupt RAW bit in the main loop instead of
-//! using CPU interrupts. (QEMU's esp32s3 interrupt matrix model proved
-//! unreliable: the ROM leaves stale mappings/pendings on CPU lines, and
-//! the CCOUNT special registers aren't recognized by the Espressif
-//! assembler. Polling is simple, correct, and gives us the 1 kHz tick.
-//! Proper interrupt-driven tick moves to v0.3.)
+//! v0.3 polls the alarm (like v0.2 did). The RAW/CLEAR addresses below
+//! are the ones v0.2 proved in QEMU (0x74 raw, 0x7C clear) — note the
+//! raw register is NOT at the TRM's nominal 0x68 on this QEMU model;
+//! trust the experiment, not the datasheet, until proven otherwise.
 //!
-//! The poll loop ([`poll_tick`]) does the minimum: if the T0 alarm fired,
-//! bump [`TICKS`], clear the interrupt (write-1-to-clear), and re-arm the
-//! alarm. Re-arming is mandatory — `ALARM_EN` self-clears when the alarm
-//! fires (TRM 12.3.3 "Timer as Periodic Alarm"), even with `AUTORELOAD` set.
-//! Forget it and the timer fires exactly once.
+//! An interrupt-driven tick was attempted: the alarm *does* reach the
+//! CPU (the exception vector fires), but QEMU's ESP32-S3 model never
+//! returns from the handler — `rfe`, manual `EPS` restore, and
+//! `jx EPC1` all hang. Until the model (or our understanding of its
+//! exception return) is fixed, the tick is polled and scheduling is
+//! cooperative. The timer hardware itself is proven: v0.2 produced
+//! thousands of monotonic polled ticks.
 
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{AtomicU32, Ordering};
-
-/// Millisecond tick counter, bumped by the poll loop and read by the main
-/// loop. A 32-bit count at 1 kHz wraps after ~49.7 days; v0.2 accepts that.
-#[no_mangle]
-pub static TICKS: AtomicU32 = AtomicU32::new(0);
 
 // ---------------------------------------------------------------------------
 // Timer Group 0, Timer 0 (TRM ch. 12, APB clock 80 MHz)
@@ -36,7 +30,7 @@ const T0ALARMHI: *mut u32 = (TIMG0_BASE + 0x14) as *mut u32;
 const T0LOADLO: *mut u32 = (TIMG0_BASE + 0x18) as *mut u32;
 const T0LOADHI: *mut u32 = (TIMG0_BASE + 0x1C) as *mut u32;
 const T0LOAD: *mut u32 = (TIMG0_BASE + 0x20) as *mut u32;
-const INT_RAW_TIMERS: *const u32 = (TIMG0_BASE + 0x74) as *const u32;
+const INT_RAW_TIMERS: *mut u32 = (TIMG0_BASE + 0x74) as *mut u32;
 const INT_CLR_TIMERS: *mut u32 = (TIMG0_BASE + 0x7C) as *mut u32;
 
 /// T0CONFIG fields: EN bit 31, INCREASE bit 30, AUTORELOAD bit 29,
@@ -49,17 +43,21 @@ const CFG_ALARM_EN: u32 = 1 << 10;
 /// Alarm value for 1 kHz at a 1 MHz timer clock.
 const ALARM_USEC: u32 = 1000;
 
+/// Running T0CONFIG: EN|INCREASE|AUTORELOAD | DIVIDER=80 | ALARM_EN.
+const CFG_RUNNING: u32 = CFG_EN | CFG_INCREASE | CFG_AUTORELOAD | CFG_DIVIDER_80 | CFG_ALARM_EN;
+
 // ---------------------------------------------------------------------------
-// Init and poll
+// Init + poll
 // ---------------------------------------------------------------------------
 
-/// Bring up the 1 kHz tick. Configures Timer 0 while stopped, then starts
-/// it with the first alarm armed. No CPU interrupts are used.
+/// Bring up the 1 kHz tick.
+///
+/// Configures Timer 0 while stopped, then starts it with the first alarm
+/// armed. No interrupt matrix, no CPU interrupt line — the tick is polled
+/// via [`poll_tick`].
 pub unsafe fn init() {
-    TICKS.store(0, Ordering::Relaxed);
-
-    // Configure Timer 0 while stopped: up-counting, autoreload, 1 MHz.
     unsafe {
+        // Configure Timer 0 while stopped: up-counting, autoreload, 1 MHz.
         write_volatile(T0CONFIG, CFG_INCREASE | CFG_AUTORELOAD | CFG_DIVIDER_80);
         write_volatile(T0LOADLO, 0);
         write_volatile(T0LOADHI, 0);
@@ -71,25 +69,23 @@ pub unsafe fn init() {
         write_volatile(INT_CLR_TIMERS, 1);
 
         // Start the timer and arm the first alarm.
-        write_volatile(
-            T0CONFIG,
-            CFG_EN | CFG_INCREASE | CFG_AUTORELOAD | CFG_DIVIDER_80 | CFG_ALARM_EN,
-        );
+        write_volatile(T0CONFIG, CFG_RUNNING);
     }
 }
 
-/// Poll the timer. If the 1 kHz alarm fired since the last call, bump
-/// [`TICKS`], clear the interrupt, and re-arm. Returns true on a tick.
-pub fn poll_tick() -> bool {
+/// Check for a timer tick. Returns `true` once per 1 kHz alarm.
+///
+/// On a tick: clears the peripheral interrupt and re-arms `ALARM_EN`,
+/// which self-clears when the alarm fires (TRM 12.3.3) even with
+/// `AUTORELOAD` set. Forget the re-arm and the timer fires exactly once.
+pub unsafe fn poll_tick() -> bool {
     unsafe {
-        if read_volatile(INT_RAW_TIMERS) & 1 == 0 {
-            return false;
+        if read_volatile(INT_RAW_TIMERS) & 1 != 0 {
+            write_volatile(INT_CLR_TIMERS, 1);
+            write_volatile(T0CONFIG, CFG_RUNNING);
+            true
+        } else {
+            false
         }
-        // Alarm fired: count it, clear it, re-arm it.
-        TICKS.fetch_add(1, Ordering::Relaxed);
-        write_volatile(INT_CLR_TIMERS, 1);
-        let cfg = read_volatile(T0CONFIG);
-        write_volatile(T0CONFIG, cfg | CFG_ALARM_EN);
-        true
     }
 }
