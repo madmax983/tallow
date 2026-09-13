@@ -470,3 +470,64 @@ pub fn wait() -> WaitResult {
         WaitResult::Blocked
     }
 }
+
+// ---------------------------------------------------------------------------
+// v0.5 fault recovery (kernel-internal)
+// ---------------------------------------------------------------------------
+
+/// Reset task `idx`'s IPC state for a post-fault restart, and wake any
+/// partner blocked on it with `PartnerFaulted`.
+///
+/// - The faulted task: outstanding op cleared, marked `Ready`, pending
+///   notifications cleared, reply links cleared. It restarts from its
+///   entry point with no memory of the interrupted operation.
+/// - A task blocked in `Call` phase 1 (awaiting a reply) with
+///   `reply_from == idx`: its operation is completed with
+///   `Failed(PartnerFaulted)` and it is woken. Re-invoking `call`
+///   reports the error; the task can then retry.
+/// - A task with `reply_to == idx` (it received the dead task's call and
+///   owes a reply): the link is cleared, so its `reply()` honestly
+///   reports `NoPartner`.
+/// - Phase-0 `Call`/`Send`, `Recv`, and `Wait` ops are left alone: the
+///   restarted task re-enters the rendezvous protocol from its entry
+///   point, so a pending send/recv simply rendezvouses again — this is
+///   the restart-tolerant path (`kernel/USERSPACE.md` §8).
+///
+/// # Safety
+///
+/// `idx < N_TASKS`. The faulted task must not be running.
+pub(crate) unsafe fn reset_for_restart(faulted: usize) {
+    unsafe {
+        let fp = task_ptr(faulted);
+        (*fp).op = None;
+        (*fp).state = TaskState::Ready;
+        (*fp).pending = 0;
+        (*fp).reply_to = None;
+        (*fp).reply_from = None;
+
+        let mut t = 0;
+        while t < N_TASKS {
+            if t != faulted {
+                let tp = task_ptr(t);
+                if let Some(op) = (*tp).op {
+                    let awaiting_reply = op.kind == OpKind::Call
+                        && op.phase == 1
+                        && !op.done
+                        && (*tp).reply_from == Some(faulted);
+                    if awaiting_reply {
+                        (*tp).op = Some(PendingOp {
+                            done: true,
+                            err: Some(IpcError::PartnerFaulted),
+                            ..op
+                        });
+                        (*tp).state = TaskState::Ready;
+                    }
+                }
+                if (*tp).reply_to == Some(faulted) {
+                    (*tp).reply_to = None;
+                }
+            }
+            t += 1;
+        }
+    }
+}

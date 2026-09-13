@@ -137,9 +137,11 @@ pub(crate) fn task_ctx_ptr(idx: usize) -> *mut Context {
 }
 
 /// Index of the task currently running its slice. Read by `ipc::me()`
-/// so syscalls know who is calling. Written only here, with interrupts
-/// disabled and never reentrantly — the `static mut` is safe.
-static mut CURRENT_TASK: usize = 0;
+/// so syscalls know who is calling, and by the v0.5 exception handler to
+/// tell a task fault from a kernel fault. `usize::MAX` while the
+/// scheduler itself runs. Written only here, with interrupts disabled
+/// and never reentrantly — the `static mut` is safe.
+static mut CURRENT_TASK: usize = usize::MAX;
 
 /// Which task is running right now. Only valid during a task slice.
 pub(crate) unsafe fn current_task() -> usize {
@@ -152,6 +154,67 @@ pub(crate) unsafe fn current_task() -> usize {
 pub(crate) unsafe fn init_task_context(idx: usize, entry: u32, stack_top: u32) {
     unsafe {
         addr_of_mut!(TASK_CTX[idx]).write(Context::initial(entry, stack_top));
+    }
+}
+
+/// Restart counts per task, for the `[fault]` report.
+static mut RESTARTS: [u32; N_TASKS] = [0; N_TASKS];
+
+/// Set by a task to request a synthetic fault-restart (v0.5 demo).
+/// The scheduler checks this after each task slice and performs the
+/// restart. This is the deterministic fault-injection path: QEMU's
+/// ESP32-S3 model does not enforce the PMS, and the ROM exception
+/// vectors are read-only, so a real CPU exception cannot be hooked.
+/// The kernel's kill/restart/PartnerFaulted logic is identical to what
+/// a hardware MPU fault would trigger.
+static mut RESTART_REQUESTED: [bool; N_TASKS] = [false; N_TASKS];
+
+/// Request a synthetic fault-restart of the calling task. Switches to
+/// the scheduler, which performs the restart. Never returns.
+pub(crate) unsafe fn request_restart(reason: &'static str) -> ! {
+    let idx = current_task();
+    debug_assert!(idx < N_TASKS);
+    RESTART_REQUESTED[idx] = true;
+    // Store the reason where the scheduler can print it.
+    RESTART_REASON[idx] = reason;
+    ctx_switch!(task_ctx_ptr(idx), sched_ctx_ptr());
+    core::hint::unreachable_unchecked()
+}
+
+/// Reasons for pending restart requests (parallel to RESTART_REQUESTED).
+static mut RESTART_REASON: [&str; N_TASKS] = [""; N_TASKS];
+
+/// Kill and restart task `idx` after a fault.
+///
+/// - Its CPU context is reset to the entry point (fresh stack, clean
+///   window), so it runs from the top on its next schedule.
+/// - Its IPC state is cleared and any partner blocked on it is woken
+///   with `Failed(PartnerFaulted)` (see `ipc::reset_for_restart`).
+/// - The restart is counted and reported on the console.
+///
+/// The kernel and all other tasks are unaffected. The task itself must
+/// be restart-tolerant (see `kernel/USERSPACE.md` §8): the demo
+/// ping-pong carries the sequence number in the message, so a retried
+/// exchange is answered again with no gap.
+///
+/// # Safety
+///
+/// `idx < N_TASKS`. Call only when the task is not running — from the
+/// exception handler or the fault-injection path — never from the task
+/// itself (its context is reset under its feet).
+pub(crate) unsafe fn restart_task(idx: usize, reason: &str) {
+    debug_assert!(idx < N_TASKS);
+    unsafe {
+        let tp = task_ptr(idx);
+        TASK_CTX[idx] = Context::initial(crate::task::task_entry_addr(idx), (*tp).stack_top);
+        crate::ipc::reset_for_restart(idx);
+        RESTARTS[idx] = RESTARTS[idx].wrapping_add(1);
+        crate::println!(
+            "[fault] task {}: {}; restart #{}",
+            idx,
+            reason,
+            RESTARTS[idx]
+        );
     }
 }
 
@@ -171,8 +234,8 @@ pub(crate) unsafe fn init_task_context(idx: usize, entry: u32, stack_top: u32) {
 /// `1 << WindowBase`).
 macro_rules! ctx_switch {
     ($old:expr, $new:expr) => {{
-        let mut old: *mut crate::sched::Context = $old;
-        let mut new: *mut crate::sched::Context = $new;
+        let old: *mut crate::sched::Context = $old;
+        let new: *mut crate::sched::Context = $new;
         unsafe {
             core::arch::asm!(
                 // Save the caller's a0 first: `movi` below clobbers it.
@@ -244,9 +307,10 @@ macro_rules! ctx_switch {
                 "l32i a3, a3, 20", // a3 last — it was the base register
                 "jx a4",          // resume; never a callx/retw
                 "4:",
-                inout("a2") old,
-                inout("a3") new,
+                in("a2") old,
+                in("a3") new,
                 out("a4") _,
+                out("a5") _, // scratch for the 1<<WindowBase computation above
             );
         }
     }};
@@ -297,6 +361,18 @@ pub fn run() -> ! {
             if ready {
                 unsafe { CURRENT_TASK = idx };
                 ctx_switch!(sched_ctx_ptr(), task_ctx_ptr(idx));
+                // The task yielded or requested a restart. Handle a
+                // synthetic fault request before continuing.
+                unsafe {
+                    if RESTART_REQUESTED[idx] {
+                        RESTART_REQUESTED[idx] = false;
+                        let reason = RESTART_REASON[idx];
+                        restart_task(idx, reason);
+                    }
+                }
+                // Back in the scheduler: mark it, so the exception
+                // handler can tell a task fault from a kernel fault.
+                unsafe { CURRENT_TASK = usize::MAX };
             }
             idx += 1;
         }

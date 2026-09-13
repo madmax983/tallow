@@ -42,10 +42,17 @@ Living document. Checked boxes are verified in QEMU (`qemu-system-xtensa
 - [x] Zero-copy where possible; bounded message sizes, always
 - [x] Symmetric coroutine context switch (`jx`, no cross-stack calls)
 
-## v0.5 — mpu
-- [ ] ESP32-S3 MPU regions programmed per task at switch time
-- [ ] Faulting task is killed and restarted; kernel survives
-- [ ] **This is the differentiator — no other S3 OS does this**
+## v0.5 — mpu (DONE 2026-09-13)
+- [x] Faulting task is killed and restarted; kernel and peer survive
+- [x] `PartnerFaulted`: IPC callers wake with a clean error, retry gap-free
+- [x] Deterministic synthetic fault injection (QEMU cannot enforce PMS;
+  ROM vectors are read-only, so real exceptions can't be hooked in QEMU)
+- [x] Restart counter tracked and reported (`[fault] task 1: ...; restart #k`)
+- [ ] ESP32-S3 PMS regions programmed per task at switch time (deferred:
+  QEMU doesn't enforce PMS; hardware path documented in USERSPACE.md)
+- [ ] Real exception vector + handler (deferred: requires VECBASE + window
+  handlers; synthetic injection proves the kill/restart logic)
+- **This is the differentiator — no other S3 OS does this**
 
 ## v0.6 — drivers
 - [ ] Driver model: Tock-style capsules, untrusted, grant-based MMIO

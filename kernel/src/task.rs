@@ -115,7 +115,7 @@ pub unsafe fn init() {
 /// The `fn -> u32` cast is deliberate (32-bit target; the context stores a
 /// 32-bit PC), so the pedantic `fn_to_numeric_cast` lint is allowed here.
 #[allow(clippy::fn_to_numeric_cast)]
-fn task_entry_addr(idx: usize) -> u32 {
+pub(crate) fn task_entry_addr(idx: usize) -> u32 {
     unsafe { (*task_ptr(idx)).entry as u32 }
 }
 
@@ -159,6 +159,14 @@ static mut COUNT_A: u32 = 0;
 /// A coroutine: one slice per scheduler resume, then an explicit yield.
 extern "C" fn task_a() -> ! {
     use crate::ipc::{call, wait};
+    // Fresh-start initialization. Runs once at boot and again after every
+    // fault restart: the entry point is re-entered from a clean context,
+    // while yields resume inside the loop below, never here. COUNT_A is
+    // deliberately NOT reset — the sequence continues where it left off,
+    // so a restarted A retries the same n instead of rewinding.
+    unsafe {
+        PHASE_A = PhaseA::Call;
+    }
     loop {
         unsafe {
             match PHASE_A {
@@ -206,12 +214,36 @@ enum PhaseB {
 static mut PHASE_B: PhaseB = PhaseB::Recv;
 static mut LAST_PING: [u8; MSG_MAX] = [0; MSG_MAX];
 static mut LAST_PING_LEN: usize = 0;
+/// Exchanges completed by B (incremented per received ping). Drives the
+/// v0.5 synthetic fault schedule below.
+static mut B_EXCHANGES: u32 = 0;
+
+/// v0.5 synthetic fault injection: request a kernel fault-restart.
+///
+/// QEMU's ESP32-S3 model does not enforce the PMS, and the ROM exception
+/// vectors are read-only (verified empirically: VECBASE=0x40000000,
+/// KExc=VECBASE+0x300, writes do not stick), so a real CPU exception
+/// cannot be hooked in QEMU. Instead, the task explicitly requests the
+/// kernel's fault path: the scheduler kills and restarts this task and
+/// wakes the IPC partner with `PartnerFaulted`. The kill/restart logic
+/// is identical to what a hardware MPU fault would trigger; only the
+/// trigger is synthetic. Deterministic, so the regression can assert
+/// exact restart points.
+fn fault_inject() -> ! {
+    unsafe { crate::sched::request_restart("synthetic fault injection") }
+}
 
 /// Task B: the responder. `recv`s the ping, `notify`s A, `reply`s
 /// `pong {n}` — the echo is built by swapping the `ping` prefix.
 /// A coroutine: one slice per scheduler resume, then an explicit yield.
 extern "C" fn task_b() -> ! {
     use crate::ipc::{notify, recv, reply};
+    // Fresh-start initialization (see task_a). PHASE_B resets to Recv so
+    // a B that faulted mid-Reply re-enters the rendezvous cleanly instead
+    // of re-running a reply whose partner link was scrubbed.
+    unsafe {
+        PHASE_B = PhaseB::Recv;
+    }
     loop {
         unsafe {
             match PHASE_B {
@@ -231,6 +263,17 @@ extern "C" fn task_b() -> ! {
                     }
                 }
                 PhaseB::Reply => {
+                    // v0.5 synthetic fault injection: fault here — after
+                    // receiving, before notifying/replying — while A is
+                    // blocked in `call` awaiting the reply. Deterministic
+                    // (exchanges 300, 700, 1100, ...) so the regression
+                    // can assert the exact restart points. The handler
+                    // restarts B; A wakes with PartnerFaulted and retries
+                    // the same n, which the fresh B receives and answers.
+                    B_EXCHANGES = B_EXCHANGES.wrapping_add(1);
+                    if B_EXCHANGES % 400 == 300 {
+                        fault_inject();
+                    }
                     let rlen = LAST_PING_LEN;
                     let mut pong = [0u8; MSG_MAX];
                     pong[..4].copy_from_slice(b"pong");

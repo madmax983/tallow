@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Tallow v0.4 regression: deterministic proof of tick + IPC + idle.
+"""Tallow v0.5 regression: deterministic proof of tick + IPC + fault/restart.
 
 Runs the kernel in QEMU, captures UART0, and checks the output contract:
-  - banner 'Tallow v0.4 "ipc"' present (boot)
+  - banner 'Tallow v0.5 "mpu"' present (boot)
   - "[ipc NNNN] ping -> pong" lines, NNNN strictly sequential from 0:
     tasks A and B hold a real rendezvous conversation (call/recv/reply
     plus notify/wait); no exchange may be dropped, duplicated, or reordered
+  - "[fault] task 1: synthetic fault injection; restart #k" lines with
+    k strictly sequential from 1: task B faults at deterministic points,
+    is killed and restarted, and the conversation continues gap-free
   - "[t=N]" every 100 ticks with N = 100, 200, ... (monotonic tick count)
   - "[heartbeat] ticks = N (idle)" every 1000 ticks (idle task runs)
-  - every scheduler-output line matches one of those three shapes
+  - every scheduler-output line matches one of those four shapes
     (no stray task output)
 
 Usage: python3 regression.py [--seconds N]
@@ -25,7 +28,7 @@ LOG = os.path.join(KERNEL, "build", "uart0.log")
 ELF = os.path.join(KERNEL, "target", "xtensa-esp32s3-none-elf", "debug", "tallow")
 SRC = os.path.join(KERNEL, "src")
 
-BANNER_TITLE = 'Tallow v0.4 "ipc"'
+BANNER_TITLE = 'Tallow v0.5 "mpu"'
 
 
 def check_fresh() -> str | None:
@@ -104,6 +107,7 @@ def main() -> int:
 
     # 2. IPC conversation: [ipc NNNN] ping -> pong, NNNN = 0, 1, 2, ...
     # strictly sequential — no dropped, duplicated, or reordered exchange.
+    # (Faults do not break the sequence: the retry is answered again.)
     nums = []
     if body is not None:
         nums = [int(m) for m in
@@ -116,6 +120,17 @@ def main() -> int:
             failures.append(
                 f"exchange sequence broken at line {bad}: "
                 f"got {nums[bad]}, want {bad} (neighbors: {nums[max(0,bad-2):bad+3]})")
+
+    # 2b. Fault/restarts: [fault] task 1: ...; restart #k, k = 1, 2, 3, ...
+    # strictly sequential — every synthetic fault kills and restarts B.
+    restarts = []
+    if body is not None:
+        restarts = [int(m) for m in
+                    re.findall(r"\[fault\] task 1: .*?; restart #(\d+)", body)]
+        if not restarts:
+            failures.append("no [fault] restart lines (fault injection not running?)")
+        elif restarts != list(range(1, len(restarts) + 1)):
+            failures.append(f"restart counter not sequential: {restarts[:10]}")
 
     # 3. Tick markers monotonic: [t=100], [t=200], ...
     ticks = [int(m) for m in re.findall(r"\[t=(\d+)\]", out)]
@@ -137,10 +152,11 @@ def main() -> int:
         failures.append(f"first heartbeat at {beats[0]}, want 1000")
 
     # 5. Line discipline: every scheduler-output line is an exchange line,
-    # a tick marker, or a heartbeat. Anything else is stray task output.
+    # a fault/restart line, a tick marker, or a heartbeat. Anything else
+    # is stray task output.
     if body is not None:
         line_re = re.compile(
-            r"^(?:\[ipc \d+\] ping -> pong| \[t=\d+\]|\[heartbeat\] ticks = \d+ \(idle\))$")
+            r"^(?:\[ipc \d+\] ping -> pong|\[fault\] task \d+: .*; restart #\d+| \[t=\d+\]|\[heartbeat\] ticks = \d+ \(idle\))$")
         for i, line in enumerate(body.splitlines()):
             if line.strip() == "":
                 continue
@@ -154,6 +170,7 @@ def main() -> int:
             print(f"  - {f}")
         return 1
     print(f"PASS: {len(nums)} IPC exchanges (0..{nums[-1]}), "
+          f"{len(restarts)} fault/restarts (#1..#{restarts[-1]}), "
           f"{len(ticks)} tick markers (t={ticks[0]}..{ticks[-1]}), "
           f"{len(beats)} heartbeats (ticks={beats[0]}..{beats[-1]})")
     return 0

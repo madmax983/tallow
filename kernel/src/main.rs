@@ -88,10 +88,11 @@ pub unsafe extern "C" fn kernel_main() -> ! {
     unsafe { task::init() };
 
     println!();
-    println!("Tallow v0.4 \"ipc\" -- the little OS that could");
+    println!("Tallow v0.5 \"mpu\" -- the little OS that could");
     println!("target: ESP32-S3 (Xtensa LX7) | no_std | no heap | no mercy");
     println!("timg0 1 kHz tick (polled) | tasks: A, B, idle (cooperative)");
     println!("ipc: rendezvous EP_PING=0, MSG_MAX=64, notify/wait");
+    println!("mpu: synthetic fault injection, kill/restart, PartnerFaulted");
     // The static task table, as the kernel sees it.
     let mut i = 0;
     while i < ipc::N_TASKS {

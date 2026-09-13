@@ -178,15 +178,15 @@ extern "C" fn task_a() -> ! {
   64-byte messages, 8 endpoints. If it can't be bounded at build time, it
   doesn't exist.
 
-## 8. v0.5 preview — faults (normative for v0.5)
+## 8. v0.5 — faults (implemented)
 
 - If a task faults (e.g. an MPU violation), the kernel **kills and
   restarts** it: the faulting task is reset to its entry point with fresh
   IPC state (no outstanding op, empty notification word, no reply
   partner); the kernel and all other tasks are unaffected.
 - Any task blocked in IPC **with the faulting task as partner** has its
-  operation completed with `Failed(PartnerFaulted)` and is woken. (In
-  v0.4 the only partner-tracked operation is `call` awaiting a reply.)
+  operation completed with `Failed(PartnerFaulted)` and is woken. (The
+  only partner-tracked operation is `call` awaiting a reply.)
 - **Tasks must be written restart-tolerant.** Keep protocol state such
   that a retried operation is harmless: the demo ping-pong carries the
   sequence number *in the message* (`ping {n}` → `pong {n}`), so if task
@@ -194,6 +194,18 @@ extern "C" fn task_a() -> ! {
   again — no sequence gap, no desync. A task that cannot tolerate its
   partner restarting is a task bug.
 - The kernel counts restarts per task and reports them on the console
-  (`[fault] task B: <reason>; restart #k`). There is no restart backoff
+  (`[fault] task 1: <reason>; restart #k`). There is no restart backoff
   in v0.5; a task that faults in a tight loop will visibly spin its
   restart counter, which is the honest signal.
+- **QEMU gap (honest):** QEMU's ESP32-S3 model does not enforce the PMS
+  — PMS register writes are accepted but never enforced — so a real MPU
+  violation cannot be produced in QEMU. Worse, the ROM exception vectors
+  are read-only (verified: VECBASE=0x40000000, KExc=VECBASE+0x300, writes
+  do not stick), so a genuine CPU exception cannot be hooked in QEMU.
+  The fault path is verified by deterministic synthetic fault injection:
+  task B explicitly requests the kernel's fault path at fixed exchange
+  numbers (300, 700, 1100, ...); the kill, restart, `PartnerFaulted`
+  wake, and gap-free retry are all real. On real hardware, the PMS must
+  be programmed per the ESP32-S3 Technical Reference Manual and a
+  proper exception vector installed — that hardware path is documented
+  but not implemented or tested in v0.5.
