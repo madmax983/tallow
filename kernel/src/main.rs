@@ -1,11 +1,19 @@
 //! Tallow — a tiny best-in-breed OS kernel for the ESP32-S3.
 //!
-//! v0.3 "tasks": the kernel brings up Timer Group 0, Timer 0 for a 1 kHz
+//! v0.4 "ipc": the kernel brings up Timer Group 0, Timer 0 for a 1 kHz
 //! tick (polled), initializes two worker tasks (A and B) on their own
-//! stacks, then enters the cooperative round-robin scheduler. Every tick
-//! runs A then B; the idle task (the scheduler loop itself) prints a
-//! heartbeat every 1000 ticks. Output shows `ABAB...` with `[t=N]`
-//! markers — deterministic proof that the tick fires and both tasks run.
+//! stacks, then enters the cooperative scheduler. A and B hold a real
+//! conversation over synchronous rendezvous IPC (`call`/`recv`/`reply`
+//! plus `notify`/`wait`); each exchange prints `[ipc NNNN] ping -> pong`.
+//! The idle task (the scheduler loop itself) prints a heartbeat every
+//! 1000 ticks. Output shows the numbered exchanges with `[t=N]`
+//! markers — deterministic proof that IPC, the tick, and both tasks work.
+//!
+//! Tasks run as coroutines: the scheduler resumes each task through a
+//! symmetric register-window switch (`sched::ctx_switch!`) that never
+//! lets a windowed call or return cross stacks. A task runs one slice,
+//! yields explicitly, and is resumed after the yield with its locals and
+//! call depth intact.
 //!
 //! Boot path: the ESP32-S3 ROM loads the app image from flash offset 0x0
 //! and jumps to its entry point. `_start` below establishes the machine
@@ -16,6 +24,7 @@
 #![no_main]
 #![feature(asm_experimental_arch)]
 
+mod ipc;
 mod print;
 mod sched;
 mod task;
@@ -59,10 +68,18 @@ pub extern "C" fn _start() -> ! {
         );
     }
     // Now running on our own stack: interrupts off, PS known.
+    // Window spill/fill uses the ROM handlers (custom handlers are v0.5's
+    // problem, when faults need catching).
     unsafe { kernel_main() }
 }
 
 /// Rust entry point: timer, tasks, banner, then the scheduler. Never returns.
+///
+/// # Safety
+///
+/// Call exactly once, from `_start` after it has switched to the boot
+/// stack with interrupts disabled. The caller must guarantee no other
+/// code is running.
 #[no_mangle]
 pub unsafe extern "C" fn kernel_main() -> ! {
     // The 1 kHz tick (polled).
@@ -71,9 +88,23 @@ pub unsafe extern "C" fn kernel_main() -> ! {
     unsafe { task::init() };
 
     println!();
-    println!("Tallow v0.3 \"tasks\" -- the little OS that could");
+    println!("Tallow v0.4 \"ipc\" -- the little OS that could");
     println!("target: ESP32-S3 (Xtensa LX7) | no_std | no heap | no mercy");
     println!("timg0 1 kHz tick (polled) | tasks: A, B, idle (cooperative)");
+    println!("ipc: rendezvous EP_PING=0, MSG_MAX=64, notify/wait");
+    // The static task table, as the kernel sees it.
+    let mut i = 0;
+    while i < ipc::N_TASKS {
+        let (name, stack_top) = unsafe {
+            let t = &*task::task_ptr(i);
+            (t.name, t.stack_top)
+        };
+        println!(
+            "task {} ({}): stack top {:#010x} (4 KiB)",
+            i, name, stack_top
+        );
+        i += 1;
+    }
     println!();
 
     // The scheduler never returns. A and B interleave below.

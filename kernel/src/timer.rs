@@ -24,7 +24,7 @@ use core::ptr::{read_volatile, write_volatile};
 // ---------------------------------------------------------------------------
 
 const TIMG0_BASE: usize = 0x6001_F000;
-const T0CONFIG: *mut u32 = (TIMG0_BASE + 0x00) as *mut u32;
+const T0CONFIG: *mut u32 = TIMG0_BASE as *mut u32;
 const T0ALARMLO: *mut u32 = (TIMG0_BASE + 0x10) as *mut u32;
 const T0ALARMHI: *mut u32 = (TIMG0_BASE + 0x14) as *mut u32;
 const T0LOADLO: *mut u32 = (TIMG0_BASE + 0x18) as *mut u32;

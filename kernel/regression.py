@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Tallow v0.3 regression: deterministic proof of tick + tasks + idle.
+"""Tallow v0.4 regression: deterministic proof of tick + IPC + idle.
 
 Runs the kernel in QEMU, captures UART0, and checks the output contract:
-  - banner "Tallow v0.3" present (boot)
-  - "AB" repeats once per tick: tasks A and B interleave and both run
+  - banner 'Tallow v0.4 "ipc"' present (boot)
+  - "[ipc NNNN] ping -> pong" lines, NNNN strictly sequential from 0:
+    tasks A and B hold a real rendezvous conversation (call/recv/reply
+    plus notify/wait); no exchange may be dropped, duplicated, or reordered
   - "[t=N]" every 100 ticks with N = 100, 200, ... (monotonic tick count)
   - "[heartbeat] ticks = N (idle)" every 1000 ticks (idle task runs)
+  - every scheduler-output line matches one of those three shapes
+    (no stray task output)
 
 Usage: python3 regression.py [--seconds N]
 Exit 0 on PASS, 1 on FAIL.
@@ -21,7 +25,7 @@ LOG = os.path.join(KERNEL, "build", "uart0.log")
 ELF = os.path.join(KERNEL, "target", "xtensa-esp32s3-none-elf", "debug", "tallow")
 SRC = os.path.join(KERNEL, "src")
 
-BANNER_TITLE = 'Tallow v0.3 "tasks"'
+BANNER_TITLE = 'Tallow v0.4 "ipc"'
 
 
 def check_fresh() -> str | None:
@@ -29,7 +33,7 @@ def check_fresh() -> str | None:
 
     mkimage.py packages whatever ELF is on disk; if the last build failed,
     we'd otherwise "pass" against yesterday's kernel. Also covers the
-    build script and linker script: a build-flag change without a source
+    build script and linker inputs: a build-flag change without a source
     change must still trigger a rebuild.
     """
     if not os.path.exists(ELF):
@@ -39,7 +43,7 @@ def check_fresh() -> str | None:
     for name in sorted(os.listdir(SRC)):
         if name.endswith(".rs"):
             inputs.append(os.path.join(SRC, name))
-    for extra in ("build.sh", "link.ld", "mkimage.py"):
+    for extra in ("build.sh", "link.ld", "memory.x", "mkimage.py"):
         p = os.path.join(KERNEL, extra)
         if os.path.exists(p):
             inputs.append(p)
@@ -66,9 +70,8 @@ def run_qemu(seconds: int) -> str:
 def scheduler_output(out: str) -> str | None:
     """Return only the scheduler's output: everything after the banner block.
 
-    The ROM bootloader and the banner itself contain stray uppercase A/B
-    letters (e.g. "SPI_FAST_FLASH_BOOT", "tasks: A, B"); the strict
-    round-robin check below must not see them.
+    The ROM bootloader and the banner itself contain stray text (e.g. the
+    task table); the strict per-line check below must not see it.
     """
     idx = out.find(BANNER_TITLE)
     if idx < 0:
@@ -99,17 +102,20 @@ def main() -> int:
     if body is None:
         failures.append("banner missing or banner block malformed")
 
-    # 2. AB interleave: count AB pairs in the scheduler's output.
-    # Strip the marker/heartbeat lines first so we only count task output.
-    ab_pairs = 0
-    letters = ""
+    # 2. IPC conversation: [ipc NNNN] ping -> pong, NNNN = 0, 1, 2, ...
+    # strictly sequential — no dropped, duplicated, or reordered exchange.
+    nums = []
     if body is not None:
-        task_out = re.sub(r"\[t=\d+\].*", "", body)
-        task_out = re.sub(r"\[heartbeat\].*", "", task_out)
-        ab_pairs = task_out.count("AB")
-        if ab_pairs < 500:
-            failures.append(f"only {ab_pairs} AB pairs (want >= 500)")
-        letters = re.sub(r"[^AB]", "", task_out)
+        nums = [int(m) for m in
+                re.findall(r"\[ipc (\d+)\] ping -> pong", body)]
+        if len(nums) < 500:
+            failures.append(f"only {len(nums)} IPC exchanges (want >= 500)")
+        elif nums != list(range(len(nums))):
+            bad = next(i for i, (a, b) in
+                       enumerate(zip(nums, range(len(nums)))) if a != b)
+            failures.append(
+                f"exchange sequence broken at line {bad}: "
+                f"got {nums[bad]}, want {bad} (neighbors: {nums[max(0,bad-2):bad+3]})")
 
     # 3. Tick markers monotonic: [t=100], [t=200], ...
     ticks = [int(m) for m in re.findall(r"\[t=(\d+)\]", out)]
@@ -130,25 +136,26 @@ def main() -> int:
     elif beats[0] != 1000:
         failures.append(f"first heartbeat at {beats[0]}, want 1000")
 
-    # 5. No stray task letters outside the AB pattern: every A must be
-    # followed by B (tasks run strictly round-robin, one slice each).
-    # A trailing lone "A" is fine — timeout may land mid-tick.
+    # 5. Line discipline: every scheduler-output line is an exchange line,
+    # a tick marker, or a heartbeat. Anything else is stray task output.
     if body is not None:
-        if letters.endswith("A"):
-            letters = letters[:-1]
-        if re.search(r"A(?!B)", letters):
-            failures.append("found an 'A' not followed by 'B' (round-robin broken)")
-        if letters and not letters.startswith("AB"):
-            failures.append("task output does not start with AB")
+        line_re = re.compile(
+            r"^(?:\[ipc \d+\] ping -> pong| \[t=\d+\]|\[heartbeat\] ticks = \d+ \(idle\))$")
+        for i, line in enumerate(body.splitlines()):
+            if line.strip() == "":
+                continue
+            if not line_re.match(line):
+                failures.append(f"stray output line {i}: {line!r:.80}")
+                break
 
     if failures:
         print("FAIL")
         for f in failures:
             print(f"  - {f}")
         return 1
-    print(f"PASS: {ab_pairs} AB pairs, {len(ticks)} tick markers "
-          f"(t={ticks[0]}..{ticks[-1]}), {len(beats)} heartbeats "
-          f"(ticks={beats[0]}..{beats[-1]})")
+    print(f"PASS: {len(nums)} IPC exchanges (0..{nums[-1]}), "
+          f"{len(ticks)} tick markers (t={ticks[0]}..{ticks[-1]}), "
+          f"{len(beats)} heartbeats (ticks={beats[0]}..{beats[-1]})")
     return 0
 
 

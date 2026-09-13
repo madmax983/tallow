@@ -8,7 +8,7 @@ use core::fmt;
 use core::ptr::{read_volatile, write_volatile};
 
 const UART0_BASE: usize = 0x6000_0000;
-const UART_FIFO: *mut u32 = (UART0_BASE + 0x00) as *mut u32; // FIFO write register
+const UART_FIFO: *mut u32 = UART0_BASE as *mut u32; // FIFO write register
 const UART_STATUS: *const u32 = (UART0_BASE + 0x1C) as *const u32; // STATUS register
 const TXFIFO_CNT_SHIFT: u32 = 16; // STATUS[25:16] = bytes currently in TX FIFO
 const UART_TX_FIFO_LEN: u32 = 128; // ESP32-S3 UART TX FIFO depth

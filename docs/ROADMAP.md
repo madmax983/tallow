@@ -36,10 +36,11 @@ Living document. Checked boxes are verified in QEMU (`qemu-system-xtensa
       Preemptive scheduling stays future work — the polled tick is the
       honest primitive until exception return is proven.
 
-## v0.4 — ipc
-- [ ] seL4-style synchronous rendezvous IPC between tasks
-- [ ] Notifications (async signals) for driver events
-- [ ] Zero-copy where possible; bounded message sizes, always
+## v0.4 — ipc (done, verified in QEMU)
+- [x] seL4-style synchronous rendezvous IPC between tasks
+- [x] Notifications (async signals) for driver events
+- [x] Zero-copy where possible; bounded message sizes, always
+- [x] Symmetric coroutine context switch (`jx`, no cross-stack calls)
 
 ## v0.5 — mpu
 - [ ] ESP32-S3 MPU regions programmed per task at switch time
