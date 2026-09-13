@@ -1,13 +1,14 @@
 //! Tallow — a tiny best-in-breed OS kernel for the ESP32-S3.
 //!
-//! v0.4 "ipc": the kernel brings up Timer Group 0, Timer 0 for a 1 kHz
-//! tick (polled), initializes two worker tasks (A and B) on their own
-//! stacks, then enters the cooperative scheduler. A and B hold a real
-//! conversation over synchronous rendezvous IPC (`call`/`recv`/`reply`
-//! plus `notify`/`wait`); each exchange prints `[ipc NNNN] ping -> pong`.
-//! The idle task (the scheduler loop itself) prints a heartbeat every
-//! 1000 ticks. Output shows the numbered exchanges with `[t=N]`
-//! markers — deterministic proof that IPC, the tick, and both tasks work.
+//! v0.6 "drivers": the kernel brings up Timer Group 0, Timer 0 for a 1 kHz
+//! tick (polled), initializes six tasks (A, B, C, and the GPIO, LED, and
+//! UART capsules) on their own stacks, then enters the cooperative
+//! scheduler. A and B hold a real conversation over synchronous
+//! rendezvous IPC; C drives the LED capsule on a slice cadence; the GPIO
+//! capsule owns the GPIO peripheral; the LED capsule layers on it; and
+//! the UART capsule owns UART0 — all task output flows through it as
+//! IPC. The idle task (the scheduler loop itself) prints a heartbeat
+//! every 1000 ticks.
 //!
 //! Tasks run as coroutines: the scheduler resumes each task through a
 //! symmetric register-window switch (`sched::ctx_switch!`) that never
@@ -88,10 +89,13 @@ pub unsafe extern "C" fn kernel_main() -> ! {
     unsafe { task::init() };
 
     println!();
-    println!("Tallow v0.5 \"mpu\" -- the little OS that could");
+    println!("Tallow v0.6 \"drivers\" -- the little OS that could");
     println!("target: ESP32-S3 (Xtensa LX7) | no_std | no heap | no mercy");
-    println!("timg0 1 kHz tick (polled) | tasks: A, B, idle (cooperative)");
-    println!("ipc: rendezvous EP_PING=0, MSG_MAX=64, notify/wait");
+    println!("timg0 1 kHz tick (polled) | tasks: A, B, C, GPIO, LED, UART (cooperative)");
+    println!("ipc: rendezvous EP_PING=0 EP_GPIO=1 EP_LED=2 EP_UART=3, MSG_MAX=64, notify/wait");
+    println!(
+        "capsules: GPIO owns 0x60004000 | LED -> GPIO | UART owns UART0 (tasks print via IPC)"
+    );
     println!("mpu: synthetic fault injection, kill/restart, PartnerFaulted");
     // The static task table, as the kernel sees it.
     let mut i = 0;

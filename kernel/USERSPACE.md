@@ -209,3 +209,125 @@ extern "C" fn task_a() -> ! {
   be programmed per the ESP32-S3 Technical Reference Manual and a
   proper exception vector installed — that hardware path is documented
   but not implemented or tested in v0.5.
+
+## 9. Driver capsules (v0.6)
+
+A **capsule** is a task that owns a hardware peripheral *exclusively*.
+No other task touches the peripheral's registers; every access goes
+through synchronous IPC to the capsule's endpoint. Capsules are
+Tock-style: untrusted servers, one blocking call at a time, bounded
+static messages — the same contract as §1–§8, applied to hardware.
+
+- A capsule's loop is `recv` → handle → `reply`. A capsule may itself
+  be a client of a lower capsule (layering: LED → GPIO), making its
+  blocking calls strictly sequentially, one at a time.
+- **The kernel is not an IPC client.** The scheduler, the banner, the
+  `[t=]`/`[heartbeat]`/`[fault]` lines, and the panic handler still
+  write UART0 directly through `uart::Writer`. Rationale: the kernel
+  has no task identity (`CURRENT_TASK` is `usize::MAX` in the scheduler)
+  and no blocking state — making the scheduler block on a rendezvous
+  would break the invariants §5 rests on. This split is deliberate, not
+  a shortcut: cooperative scheduling keeps the shared FIFO safe anyway,
+  because every writer completes its line inside its own slice — lines
+  can never interleave mid-line.
+- **Task IDs:** `TASK_A = 0`, `TASK_B = 1`, `TASK_C = 2` (blink driver),
+  `TASK_GPIO = 3`, `TASK_LED = 4`, `TASK_UART = 5` (`N_TASKS = 6`).
+- **Endpoints:** `EP_PING = 0`, `EP_GPIO = 1`, `EP_LED = 2`,
+  `EP_UART = 3` (`N_ENDPOINTS = 8`, unchanged).
+
+### 9.1 GPIO capsule (`EP_GPIO = 1`)
+
+Owns the GPIO peripheral (base `0x6000_4000`, IO MUX `0x6000_8000`).
+Request byte 0 is the opcode; every other byte is an argument. The reply
+is always `[status]` or `[status, level]`:
+
+| Opcode | Request | Reply | Effect |
+|---|---|---|---|
+| `C` (`0x43`) | `[C, pin, dir]` | `[status]` | Configure: `dir` 0 = input, 1 = output. Programs `IO_MUX_GPIOx` (`MCU_SEL` = GPIO; `FUN_IE` for input) and `GPIO_ENABLE_W1TS/W1TC`. An output is driven low. |
+| `S` (`0x53`) | `[S, pin]` | `[status]` | Set high (`GPIO_OUT_W1TS`). |
+| `c` (`0x63`) | `[c, pin]` | `[status]` | Clear / drive low (`GPIO_OUT_W1TC`). |
+| `T` (`0x54`) | `[T, pin]` | `[status, level]` | Toggle; `level` is the new level. |
+| `R` (`0x52`) | `[R, pin]` | `[status, level]` | Read: `level` is the software shadow for output pins, the `GPIO_IN_REG` bit for input pins. |
+
+- `pin` is `u8`, valid `0..=31` — only the low GPIO bank is modeled;
+  pins 32+ need the `OUT1`/`IN1`/`ENABLE1` register bank (future work).
+- `status`: 0 = ok, 1 = bad pin, 2 = bad request (unknown opcode, wrong
+  length, bad `dir`).
+- The capsule keeps a software **shadow** of direction and output level
+  (standard practice for atomic read-modify-write; it also means
+  `toggle`/`read` never depend on MMIO read-back).
+- Every op is idempotent per invocation, so a client retry after
+  `PartnerFaulted` is safe.
+
+### 9.2 LED capsule (`EP_LED = 2`)
+
+Owns no hardware. A client of the GPIO capsule; drives the LED pin
+(GPIO 8) through it. This is the layering demonstration: `C → LED →
+GPIO`, all synchronous IPC.
+
+| Opcode | Request | Reply | Effect |
+|---|---|---|---|
+| `+` (`0x2B`) | `[+]` | `[status, state]` | On (via GPIO `S`). |
+| `-` (`0x2D`) | `[-]` | `[status, state]` | Off (via GPIO `c`). |
+| `^` (`0x5E`) | `[^]` | `[status, state]` | Toggle (via GPIO `T`). |
+
+- `status`: 0 = ok, 1 = bad request. `state`: 0 = off, 1 = on — the
+  state *after* the operation.
+- On (re)start the LED task configures GPIO 8 as output through the
+  GPIO capsule, so a restarted LED capsule re-establishes its hardware
+  contract — genuinely restart-tolerant (§8).
+- Every request is logged through the UART capsule as `[led] on` /
+  `[led] off` reflecting the new state, *before* the reply is sent —
+  so the log order per request is always `[led]…` then the reply.
+- A `PartnerFaulted` from the GPIO or UART capsule retries the same
+  phase (both are idempotent at the point of retry: the GPIO op is
+  retried before any reply, the log line is retried only if no reply
+  was sent — in the demo neither capsule faults, so this path is
+  defensive).
+
+### 9.3 UART capsule (`EP_UART = 3`)
+
+Owns UART0. **All task output flows through it** — no task touches
+`uart::Writer` directly.
+
+- Request: 1..=64 raw bytes to emit (a complete line, newline included).
+  There is a single request type; the bytes are the payload.
+- Reply: `[n]`, `n` = bytes written (always the full request length).
+  An empty request writes nothing and replies `[0]`.
+- The capsule writes the bytes with `uart::Writer` and replies in the
+  same slice — it never blocks except in `recv`.
+
+### 9.4 Demo wiring (v0.6)
+
+- **A** (unchanged role): `call`s `EP_PING` with `ping {n}`; on reply,
+  `call`s `EP_UART` with `[ipc NNNN] ping -> pong\n`; then `wait`s for
+  B's notification. One `[ipc]` line per exchange, `NNNN` strictly
+  sequential from 0. A `PartnerFaulted` on either call retries the same
+  phase (the UART retry is safe: no reply was sent, so the line was not
+  printed).
+- **B** (unchanged): `recv`/`notify`/`reply` `pong {n}`; synthetic fault
+  injection at exchanges 300, 700, 1100, … (unchanged from v0.5).
+- **C** (new, the blink driver): every 500 of its slices, `call`s
+  `EP_LED` with `^` (toggle); otherwise silent. Retries on
+  `PartnerFaulted`. This is the "timer cadence": one slice per tick, so
+  the LED toggles every ~500 ticks.
+- The UART log discipline is therefore: scheduler/kernel lines
+  (`[t=N]`, `[heartbeat]`, `[fault]`, banner) written directly, and
+  task lines (`[ipc NNNN] ping -> pong`, `[led] on|off`) written through
+  the UART capsule. `kernel/regression.py` asserts every line matches
+  one of these shapes, plus: `[ipc]` strictly sequential from 0 (≥500
+  exchanges), `[led]` strictly alternating starting with `on`,
+  `[fault]` restart counters strictly sequential from 1, `[t=]`
+  monotonic by 100, heartbeats monotonic by 1000 from 1000.
+
+### 9.5 QEMU gaps (honest)
+
+- **GPIO is not modeled.** QEMU's `esp32s3` machine accepts writes to
+  the GPIO/IO_MUX register blocks but implements no pin state; the
+  electrical effect is unobservable. The capsule programs the real
+  registers per the ESP32-S3 Technical Reference Manual (so it is
+  hardware-correct), keeps its software shadow, and the demo's
+  observable proof is the `[led]` state-change log through the UART
+  capsule. Wiggling a physical pin needs hardware.
+- **UART0 TX is modeled** — the entire log is the proof, as in v0.1–v0.5.
+- The v0.5 gaps (PMS unenforced, ROM vectors read-only) are unchanged.

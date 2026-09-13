@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Tallow v0.5 regression: deterministic proof of tick + IPC + fault/restart.
+"""Tallow v0.6 regression: deterministic proof of tick + IPC + capsules.
 
 Runs the kernel in QEMU, captures UART0, and checks the output contract:
-  - banner 'Tallow v0.5 "mpu"' present (boot)
+  - banner 'Tallow v0.6 "drivers"' present (boot)
   - "[ipc NNNN] ping -> pong" lines, NNNN strictly sequential from 0:
     tasks A and B hold a real rendezvous conversation (call/recv/reply
-    plus notify/wait); no exchange may be dropped, duplicated, or reordered
+    plus notify/wait); no exchange may be dropped, duplicated, or reordered.
+    Printed by task A *through the UART capsule*.
+  - "[led] on" / "[led] off" lines, strictly alternating from "on":
+    task C drives the LED capsule on a slice cadence; the LED capsule
+    toggles GPIO 8 through the GPIO capsule and logs through the UART
+    capsule (C -> LED -> GPIO layering, all synchronous IPC)
   - "[fault] task 1: synthetic fault injection; restart #k" lines with
     k strictly sequential from 1: task B faults at deterministic points,
     is killed and restarted, and the conversation continues gap-free
   - "[t=N]" every 100 ticks with N = 100, 200, ... (monotonic tick count)
   - "[heartbeat] ticks = N (idle)" every 1000 ticks (idle task runs)
-  - every scheduler-output line matches one of those four shapes
+  - every scheduler-output line matches one of those shapes
     (no stray task output)
 
 Usage: python3 regression.py [--seconds N]
@@ -28,7 +33,7 @@ LOG = os.path.join(KERNEL, "build", "uart0.log")
 ELF = os.path.join(KERNEL, "target", "xtensa-esp32s3-none-elf", "debug", "tallow")
 SRC = os.path.join(KERNEL, "src")
 
-BANNER_TITLE = 'Tallow v0.5 "mpu"'
+BANNER_TITLE = 'Tallow v0.6 "drivers"'
 
 
 def check_fresh() -> str | None:
@@ -132,6 +137,23 @@ def main() -> int:
         elif restarts != list(range(1, len(restarts) + 1)):
             failures.append(f"restart counter not sequential: {restarts[:10]}")
 
+    # 2c. LED capsule: [led] on / [led] off, strictly alternating from
+    # "on" (the pin starts low; every request is a toggle driven by task
+    # C). Proves the C -> LED -> GPIO IPC layering ran end to end.
+    leds = []
+    if body is not None:
+        leds = re.findall(r"\[led\] (on|off)", body)
+        if len(leds) < 8:
+            failures.append(f"only {len(leds)} [led] lines (want >= 8)")
+        elif leds[0] != "on":
+            failures.append(f"first [led] state is {leds[0]!r}, want 'on'")
+        elif any(a == b for a, b in zip(leds, leds[1:])):
+            bad = next(i for i, (a, b) in
+                       enumerate(zip(leds, leds[1:])) if a == b)
+            failures.append(
+                f"[led] states not alternating at line {bad}: "
+                f"...{leds[max(0,bad-2):bad+3]}...")
+
     # 3. Tick markers monotonic: [t=100], [t=200], ...
     ticks = [int(m) for m in re.findall(r"\[t=(\d+)\]", out)]
     if len(ticks) < 3:
@@ -152,11 +174,11 @@ def main() -> int:
         failures.append(f"first heartbeat at {beats[0]}, want 1000")
 
     # 5. Line discipline: every scheduler-output line is an exchange line,
-    # a fault/restart line, a tick marker, or a heartbeat. Anything else
-    # is stray task output.
+    # an LED state line, a fault/restart line, a tick marker, or a
+    # heartbeat. Anything else is stray task output.
     if body is not None:
         line_re = re.compile(
-            r"^(?:\[ipc \d+\] ping -> pong|\[fault\] task \d+: .*; restart #\d+| \[t=\d+\]|\[heartbeat\] ticks = \d+ \(idle\))$")
+            r"^(?:\[ipc \d+\] ping -> pong|\[led\] (?:on|off)|\[fault\] task \d+: .*; restart #\d+| \[t=\d+\]|\[heartbeat\] ticks = \d+ \(idle\))$")
         for i, line in enumerate(body.splitlines()):
             if line.strip() == "":
                 continue
@@ -170,6 +192,7 @@ def main() -> int:
             print(f"  - {f}")
         return 1
     print(f"PASS: {len(nums)} IPC exchanges (0..{nums[-1]}), "
+          f"{len(leds)} LED toggles ({'->'.join(leds[:4])}...), "
           f"{len(restarts)} fault/restarts (#1..#{restarts[-1]}), "
           f"{len(ticks)} tick markers (t={ticks[0]}..{ticks[-1]}), "
           f"{len(beats)} heartbeats (ticks={beats[0]}..{beats[-1]})")

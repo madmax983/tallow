@@ -33,6 +33,12 @@ pub const MSG_MAX: usize = 64;
 pub const N_ENDPOINTS: u8 = 8;
 /// Demo endpoint: task A <-> task B ping-pong.
 pub const EP_PING: u8 = 0;
+/// v0.6: GPIO capsule endpoint.
+pub const EP_GPIO: u8 = 1;
+/// v0.6: LED capsule endpoint.
+pub const EP_LED: u8 = 2;
+/// v0.6: UART capsule endpoint.
+pub const EP_UART: u8 = 3;
 
 /// Task IDs (indices into the static task table). Part of the userspace
 /// ABI (`kernel/USERSPACE.md`); the current demo tasks don't use every
@@ -40,7 +46,19 @@ pub const EP_PING: u8 = 0;
 pub const TASK_A: usize = 0;
 #[allow(dead_code)]
 pub const TASK_B: usize = 1;
-pub const N_TASKS: usize = 2;
+/// v0.6: blink driver (toggles the LED capsule on a slice cadence).
+#[allow(dead_code)]
+pub const TASK_C: usize = 2;
+/// v0.6: GPIO capsule (owns the GPIO peripheral).
+#[allow(dead_code)]
+pub const TASK_GPIO: usize = 3;
+/// v0.6: LED capsule (client of the GPIO capsule).
+#[allow(dead_code)]
+pub const TASK_LED: usize = 4;
+/// v0.6: UART capsule (owns UART0; all task output flows through it).
+#[allow(dead_code)]
+pub const TASK_UART: usize = 5;
+pub const N_TASKS: usize = 6;
 
 /// Immediate (non-blocking) IPC errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

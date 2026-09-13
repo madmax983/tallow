@@ -59,8 +59,18 @@
 //! Output contract (verified by `kernel/regression.py`):
 //! - `[ipc NNNN] ping -> pong`: one line per completed A<->B exchange,
 //!   NNNN strictly sequential from 0000 (the conversation is real IPC).
+//!   Written by task A through the UART capsule.
+//! - `[led] on` / `[led] off`: LED capsule state changes, strictly
+//!   alternating from `on`, written through the UART capsule.
+//! - `[fault] task 1: <reason>; restart #k`: v0.5 synthetic fault
+//!   injection — k strictly sequential from 1.
 //! - ` [t=N]` every 100 ticks: the tick counter is monotonic.
 //! - `[heartbeat] ticks = N (idle)` every 1000 ticks: the idle task runs.
+//!
+//! v0.6: six tasks (A, B, C, GPIO, LED, UART). The kernel (scheduler,
+//! banner, panic) still writes UART0 directly — it is not an IPC
+//! client; see `kernel/USERSPACE.md` §9. All *task* output flows
+//! through the UART capsule.
 
 use core::ptr::addr_of_mut;
 
@@ -77,6 +87,7 @@ use crate::task::{task_ptr, TaskState};
 /// `windowstart` is always `1 << windowbase` in a saved context (see the
 /// module docs): only the current window is live at switch time.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct Context {
     /// Resume address (address of the end of the `ctx_switch!` expansion).
     pub pc: u32,
@@ -123,7 +134,7 @@ impl Context {
 /// The scheduler's own suspended state.
 static mut SCHED_CTX: Context = Context::zero();
 /// One suspended state per task.
-static mut TASK_CTX: [Context; 2] = [Context::zero(), Context::zero()];
+static mut TASK_CTX: [Context; N_TASKS] = [Context::zero(); N_TASKS];
 
 /// Raw pointer to the scheduler's context.
 pub(crate) fn sched_ctx_ptr() -> *mut Context {

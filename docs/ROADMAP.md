@@ -54,9 +54,24 @@ Living document. Checked boxes are verified in QEMU (`qemu-system-xtensa
   handlers; synthetic injection proves the kill/restart logic)
 - **This is the differentiator — no other S3 OS does this**
 
-## v0.6 — drivers
-- [ ] Driver model: Tock-style capsules, untrusted, grant-based MMIO
-- [ ] GPIO + LED driver, UART driver as a capsule
+## v0.6 — drivers (DONE 2026-09-13, verified in QEMU)
+- [x] Driver model: Tock-style capsules — a capsule is a task that owns
+      one peripheral exclusively; all access is synchronous IPC
+- [x] GPIO capsule (`EP_GPIO`): configure/set/clear/toggle/read, real
+      TRM register programming + software shadow; pins 0..31
+- [x] LED capsule (`EP_LED`): owns no hardware, layers on the GPIO
+      capsule (C → LED → GPIO, all IPC); logs `[led] on|off`
+- [x] UART capsule (`EP_UART`): owns UART0; **all task output** flows
+      through it (the kernel itself still writes directly — it is not an
+      IPC client, by design; see USERSPACE.md §9)
+- [x] Blink driver task C toggles the LED every ~200 ticks; `[led]`
+      lines strictly alternate in the log
+- [x] `kernel/regression.py`: 1647 gap-free exchanges, 48 LED toggles,
+      4 fault/restarts, tick/heartbeat monotonicity — PASS
+- [ ] QEMU gap (honest): the `esp32s3` machine accepts GPIO/IO_MUX writes
+      but models no pin state — the capsule is hardware-correct per the
+      TRM, the shadow is real, and the `[led]` log is the observable
+      proof; a physical pin wiggle needs hardware
 
 ## v0.7 — shell
 - [ ] Serial console: line editing, `help`, `tasks`, `mem`, `uptime`
