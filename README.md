@@ -1,6 +1,6 @@
 # Tallow 🕯️
 
-**The little OS that could.** A tiny, best-in-breed operating system kernel for
+**The little OS that could.** A tiny operating system kernel for
 the ESP32-S3, written in Rust.
 
 Tallow is a from-scratch kernel for Espressif's ESP32-S3 (dual-core Xtensa LX7,
